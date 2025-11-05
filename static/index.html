@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Auth System</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 20px; }
+    h2 { margin-top: 30px; }
+    input, button, select { padding: 8px; margin: 5px 0; box-sizing: border-box; }
+    input, select { width: 100%; }
+    button { background: #007bff; color: white; border: none; cursor: pointer; }
+    button:hover { background: #0056b3; }
+    button.delete { background: #dc3545; }
+    button.delete:hover { background: #c82333; }
+    pre { background: #f4f4f4; padding: 10px; border-radius: 4px; overflow-x: auto; }
+    .hidden { display: none; }
+    .form-group { margin-bottom: 10px; }
+    .role-item { border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr 1fr 150px; gap: 10px; margin-top: 10px; }
+    .grid-header { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Собственная система аутентификации и авторизации</h1>
+
+  <div id="auth-section">
+    <h2>Регистрация / Вход</h2>
+    <div>
+      <h3>Регистрация</h3>
+      <input type="email" id="reg-email" placeholder="Email">
+      <input type="text" id="reg-first" placeholder="Имя">
+      <input type="text" id="reg-last" placeholder="Фамилия">
+      <input type="password" id="reg-pass" placeholder="Пароль">
+      <input type="password" id="reg-pass2" placeholder="Повтор пароля">
+      <button onclick="register()">Зарегистрироваться</button>
+    </div>
+    <div>
+      <h3>Вход</h3>
+      <input type="email" id="login-email" placeholder="Email">
+      <input type="password" id="login-pass" placeholder="Пароль">
+      <button onclick="login()">Войти</button>
+    </div>
+  </div>
+
+  <div id="app-section" class="hidden">
+    <h2>Добро пожаловать, <span id="user-name"></span>!</h2>
+    <button onclick="logout()">Выйти</button>
+
+    <h3>Ваш профиль</h3>
+    <pre id="profile-data"></pre>
+    <input type="text" id="upd-first" placeholder="Новое имя">
+    <input type="text" id="upd-last" placeholder="Новая фамилия">
+    <button onclick="updateProfile()">Обновить профиль</button>
+    <button onclick="deleteAccount()">Удалить аккаунт</button>
+
+    <h3>Документы</h3>
+    <button onclick="getDocuments()">Получить список документов</button>
+    <button onclick="createDocument()">Создать документ</button>
+    <pre id="documents-result"></pre>
+
+    <div id="admin-section" class="hidden">
+      <h3>Админка: Управление пользователями</h3>
+      <input type="number" id="target-user-id" placeholder="ID пользователя">
+      <input type="number" id="role-id" placeholder="ID роли">
+      <button onclick="assignRole()">Назначить роль</button>
+      <button onclick="listUsers()">Список пользователей</button>
+      <pre id="users-list-result"></pre>
+
+      <h3>Админка: Управление ролями</h3>
+      <button onclick="loadPermissionsAndRoles()">Обновить список ролей</button>
+      <div id="roles-list-container"></div>
+
+      <h4>Создать новую роль</h4>
+      <input type="text" id="new-role-name" placeholder="Название роли">
+      <div id="new-role-perms"></div>
+      <button onclick="createRole()">Создать роль</button>
+    </div>
+  </div>
+
+  <script>
+    let authToken = null;
+    let allPermissions = [];
+
+    // --- Auth ---
+    function saveToken(token) {
+      authToken = token;
+      document.getElementById('auth-section').classList.add('hidden');
+      document.getElementById('app-section').classList.remove('hidden');
+      loadProfile();
+    }
+
+    function clearToken() {
+      authToken = null;
+      document.getElementById('auth-section').classList.remove('hidden');
+      document.getElementById('app-section').classList.add('hidden');
+    }
+
+    async function apiCall(method, path, data = null) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+      const options = { method, headers };
+      if (data) options.body = JSON.stringify(data);
+      const res = await fetch(path, options);
+      return res;
+    }
+
+    async function register() {
+      const email = document.getElementById('reg-email').value;
+      const first = document.getElementById('reg-first').value;
+      const last = document.getElementById('reg-last').value;
+      const pass = document.getElementById('reg-pass').value;
+      const pass2 = document.getElementById('reg-pass2').value;
+      const res = await apiCall('POST', '/register', { email, password: pass, password2: pass2, first_name: first, last_name: last });
+      const data = await res.json();
+      alert(res.ok ? 'Регистрация успешна!' : 'Ошибка: ' + data.error);
+    }
+
+    async function login() {
+      const email = document.getElementById('login-email').value;
+      const pass = document.getElementById('login-pass').value;
+      const res = await apiCall('POST', '/login', { email, password: pass });
+      const data = await res.json();
+      if (res.ok) {
+        saveToken(data.access_token);
+      } else {
+        alert('Ошибка входа: ' + data.error);
+      }
+    }
+
+    function logout() {
+      apiCall('POST', '/logout').then(() => {
+        clearToken();
+        alert('Вы вышли из системы');
+      });
+    }
+
+    // --- Profile ---
+    async function loadProfile() {
+      const res = await apiCall('GET', '/me');
+      if (!res.ok) { clearToken(); return; }
+      const user = await res.json();
+      document.getElementById('user-name').textContent = user.first_name;
+      document.getElementById('profile-data').textContent = JSON.stringify(user, null, 2);
+
+      if (user.role === 'admin') {
+        document.getElementById('admin-section').classList.remove('hidden');
+        loadPermissionsAndRoles();
+      } else {
+        document.getElementById('admin-section').classList.add('hidden');
+      }
+    }
+
+    async function updateProfile() {
+      const first = document.getElementById('upd-first').value;
+      const last = document.getElementById('upd-last').value;
+      await apiCall('PUT', '/profile', { first_name: first, last_name: last });
+      loadProfile();
+    }
+
+    async function deleteAccount() {
+      if (!confirm('Удалить аккаунт?')) return;
+      await apiCall('POST', '/delete-account');
+      clearToken();
+      alert('Аккаунт деактивирован');
+    }
+
+    // --- Documents ---
+    async function getDocuments() {
+      const res = await apiCall('GET', '/documents');
+      const out = document.getElementById('documents-result');
+      if (res.ok) {
+        const data = await res.json();
+        out.textContent = JSON.stringify(data, null, 2);
+      } else {
+        const err = await res.json();
+        out.textContent = `Ошибка: ${err.error} (${res.status})`;
+      }
+    }
+
+    async function createDocument() {
+      const res = await apiCall('POST', '/documents');
+      const out = document.getElementById('documents-result');
+      if (res.ok) {
+        const data = await res.json();
+        out.textContent = data.message;
+      } else {
+        const err = await res.json();
+        out.textContent = `Ошибка: ${err.error} (${res.status})`;
+      }
+    }
+
+    // --- Admin: Users ---
+    async function assignRole() {
+      const userId = document.getElementById('target-user-id').value;
+      const roleId = document.getElementById('role-id').value;
+      const res = await apiCall('POST', '/admin/assign-role', { user_id: parseInt(userId), role_id: parseInt(roleId) });
+      const data = await res.json();
+      alert(res.ok ? 'Роль назначена' : 'Ошибка: ' + data.error);
+    }
+
+    async function listUsers() {
+      const res = await apiCall('GET', '/admin/users');
+      const out = document.getElementById('users-list-result');
+      if (res.ok) {
+        const data = await res.json();
+        out.textContent = JSON.stringify(data.users, null, 2);
+      } else {
+        const err = await res.json();
+        out.textContent = `Ошибка: ${err.error} (${res.status})`;
+      }
+    }
+
+    // --- Admin: Roles CRUD ---
+    async function loadPermissionsAndRoles() {
+      // Загружаем все разрешения
+      const permRes = await apiCall('GET', '/admin/permissions');
+      if (!permRes.ok) return;
+      const permData = await permRes.json();
+      allPermissions = permData.permissions;
+
+      // Загружаем роли
+      const roleRes = await apiCall('GET', '/admin/roles');
+      if (!roleRes.ok) return;
+      const roleData = await roleRes.json();
+      renderRoles(roleData.roles);
+      renderNewRoleForm();
+    }
+
+    function renderRoles(roles) {
+      const container = document.getElementById('roles-list-container');
+      if (roles.length === 0) {
+        container.innerHTML = '<p>Нет ролей</p>';
+        return;
+      }
+
+      let html = `
+        <div class="grid grid-header">
+          <div>ID</div>
+          <div>Название</div>
+          <div>Разрешения</div>
+          <div>Действия</div>
+        </div>
+      `;
+
+      roles.forEach(role => {
+        const perms = role.permissions.map(p => `${p.resource}:${p.action}`).join(', ');
+        html += `
+          <div class="grid">
+            <div>${role.id}</div>
+            <div><input type="text" value="${role.name}" id="role-name-${role.id}"></div>
+            <div>
+              <div id="role-perms-${role.id}"></div>
+              <button onclick="togglePerms(${role.id})">Изменить разрешения</button>
+            </div>
+            <div>
+              <button onclick="updateRole(${role.id})">Сохранить</button>
+              <button class="delete" onclick="deleteRole(${role.id})">Удалить</button>
+            </div>
+          </div>
+          <div id="perms-selector-${role.id}" class="hidden" style="margin-bottom: 10px;">
+            ${allPermissions.map(p =>
+              `<label><input type="checkbox" id="perm-${role.id}-${p.id}" ${role.permissions.some(rp => rp.id === p.id) ? 'checked' : ''}> ${p.resource}:${p.action}</label><br>`
+            ).join('')}
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+    }
+
+    function renderNewRoleForm() {
+      const container = document.getElementById('new-role-perms');
+      container.innerHTML = allPermissions.map(p =>
+        `<label><input type="checkbox" id="new-perm-${p.id}"> ${p.resource}:${p.action}</label><br>`
+      ).join('');
+    }
+
+    function togglePerms(roleId) {
+      const el = document.getElementById(`perms-selector-${roleId}`);
+      el.classList.toggle('hidden');
+    }
+
+    async function updateRole(roleId) {
+      const name = document.getElementById(`role-name-${roleId}`).value;
+      const permIds = [];
+      allPermissions.forEach(p => {
+        if (document.getElementById(`perm-${roleId}-${p.id}`)?.checked) {
+          permIds.push(p.id);
+        }
+      });
+
+      const res = await apiCall('PUT', `/admin/roles/${roleId}`, { name, permission_ids: permIds });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Роль обновлена');
+        loadPermissionsAndRoles();
+      } else {
+        alert('Ошибка: ' + data.error);
+      }
+    }
+
+    async function deleteRole(roleId) {
+      if (!confirm('Удалить роль? Это невозможно отменить.')) return;
+      const res = await apiCall('DELETE', `/admin/roles/${roleId}`);
+      const data = await res.json();
+      if (res.ok) {
+        alert('Роль удалена');
+        loadPermissionsAndRoles();
+      } else {
+        alert('Ошибка: ' + data.error);
+      }
+    }
+
+    async function createRole() {
+      const name = document.getElementById('new-role-name').value;
+      if (!name) { alert('Введите название'); return; }
+
+      const permIds = [];
+      allPermissions.forEach(p => {
+        if (document.getElementById(`new-perm-${p.id}`)?.checked) {
+          permIds.push(p.id);
+        }
+      });
+
+      const res = await apiCall('POST', '/admin/roles', { name, permission_ids: permIds });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Роль создана');
+        loadPermissionsAndRoles();
+        document.getElementById('new-role-name').value = '';
+        // Сброс чекбоксов
+        allPermissions.forEach(p => {
+          const cb = document.getElementById(`new-perm-${p.id}`);
+          if (cb) cb.checked = false;
+        });
+      } else {
+        alert('Ошибка: ' + data.error);
+      }
+    }
+  </script>
+</body>
+</html>
